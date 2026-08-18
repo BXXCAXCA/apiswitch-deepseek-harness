@@ -1,553 +1,93 @@
-# APISwitch
+# APISwitch for DeepSeek Harness
 
-APISwitch 是一个 Windows 优先、本地优先的多供应商 AI API 网关。客户端只需要连接一个本地地址并使用稳定的“统一模型”名称，APISwitch 在内部完成供应商管理、模型同步、协议转换、路由、视觉等辅助工作流、鉴权、预算和调用日志。
+APISwitch for DeepSeek Harness is a plugin-focused fork of
+[APISwitch](https://github.com/BXXCAXCA/apiswitch). It runs a loopback-only, multi-provider AI
+gateway for DeepSeek Harness and keeps the provider/model routing controls that matter to Harness.
 
-当前源码版本：`v0.1.15` · [下载 Windows 版本](https://github.com/BXXCAXCA/apiswitch/releases/tag/v0.1.15) · [查看全部 Releases](https://github.com/BXXCAXCA/apiswitch/releases)
+Version: `0.1.0`
 
-> 当前产品结构为“供应商实例 → 上游模型 → 统一模型/辅助模型 → 客户端 Token → 统一网关”。旧的 Connection/Node 和“路由状态”前端页面不再使用。
+## What changed from APISwitch
 
-## 主要功能
+- Added a Codex plugin manifest and a dedicated `apiswitch-deepseek-harness` skill.
+- Added idempotent plugin start, workspace connection, and stop scripts.
+- Added a plugin-managed local Harness API key. It automatically has access to every enabled
+  unified model, including models created after first startup.
+- Removed the Client Management and generic Agent Configuration pages from the plugin UI.
+- Kept provider instances, upstream models, unified models, auxiliary workflows, routing, budgets,
+  logs, accounting, protocol conversion, and privacy settings.
+- Uses `%LOCALAPPDATA%\APISwitchDeepSeekHarness` by default, separate from desktop APISwitch data.
 
-- 管理多个 OpenAI-Compatible、Anthropic Messages、Gemini 等上游供应商。
-- 从供应商同步模型，或手工维护上游模型及其上下文、输入和输出能力。
-- 使用统一模型名隐藏供应商差异，并为一个统一模型绑定多个候选上游。
-- 支持优先级、成本、延迟、轮询、加权、随机和会话粘性等 Combo 路由策略。
-- 通过 Canonical 内部协议转换 OpenAI Chat、Responses、Anthropic Messages 和 Gemini 请求与响应。
-- 为不具备视觉、文件等能力的主模型配置辅助模型工作流。
-- 按客户端 Token 限制可见模型、Scope、有效期、预算和并发。
-- 记录主调用和辅助步骤的状态、延迟、Token、成本、路由与错误阶段。
-- 提供 Windows 单文件桌面程序、托盘、单实例、自启动和端口冲突回退。
-- 提供 Claude Code 配置预览、备份、写入和恢复，并保留其他 Agent 扩展入口。
-
-## 为什么选择 APISwitch
-
-[OmniRoute](https://github.com/diegosouzapw/OmniRoute) 是供应商和功能覆盖非常广的通用 AI 网关，适合追求大量免费 Provider、自动路由、上下文压缩、MCP/A2A 和多平台部署的用户。APISwitch 不以供应商数量取胜，而是面向希望模型关系清楚、协议行为可控、调用过程可审计的本地用户。
-
-### 1. 稳定的统一模型，不让客户端绑定供应商
-
-APISwitch 将“供应商实例”“上游模型”和“统一模型”明确分层。Cherry Studio、Codex、Claude Code 等客户端只使用统一模型名；更换供应商、模型版本或候选优先级时，不需要逐个修改客户端。
+## Architecture
 
 ```text
-客户端固定使用 GLM-5.2
-        ├─ SenseNova / glm-5.2
-        ├─ ModelScope / ZhipuAI/GLM-5.2
-        └─ 其他兼容供应商 / glm-5.2
+DeepSeek Harness
+       |
+       | OpenAI-compatible request + plugin-managed local key
+       v
+APISwitch Harness gateway (127.0.0.1 only)
+       |
+       +-- unified model routing and failover
+       +-- auxiliary vision/file/audio workflows
+       +-- budgets, usage, logs, and structured errors
+       |
+       v
+DeepSeek / GLM / Qwen / compatible providers
 ```
 
-这更适合希望长期维护稳定客户端配置，同时在后台精确控制实际调用目标的场景。
+## Run from source
 
-### 2. 协议保真优先，错误发生在哪一层更明确
-
-APISwitch 使用 Canonical 请求、响应和事件作为内部协议。OpenAI Chat、Responses、Anthropic Messages 和 Gemini 请求先进入同一语义层，再转换到实际上游协议。
-
-当字段无法可靠转换时，APISwitch 倾向于返回包含失败阶段和错误类型的结构化错误，而不是静默删除字段。这对工具调用、思考内容、流式事件、图像、文件和多轮消息尤其重要，也更容易区分：
-
-- 客户端请求格式问题
-- Token 或模型授权问题
-- 统一模型能力不足
-- 路由没有可用候选
-- 辅助步骤失败
-- 上游限流或 HTTP 错误
-- 上游响应无法解析
-
-### 3. 辅助模型是一等配置，不是隐藏的自动行为
-
-APISwitch 可以显式配置“图像转文本”“文件提取”“上下文压缩”“音频转写”和“结构化输出修复”等工作流。无视觉主模型收到图像时，可以先由指定视觉模型识别，再把文本结果交给主模型。
-
-辅助模型、能力、优先级、工作流顺序和适用统一模型均可查看和修改，并可在调用前执行模拟规划。系统不会在没有配置的情况下擅自选择其他模型。
-
-### 4. 主调用和辅助调用可以分别审计
-
-一次用户请求可能包含主模型和一个或多个辅助步骤。APISwitch 将它们保存为父子日志，分别记录：
-
-- 实际供应商与上游模型
-- 输入和输出 Token
-- 延迟与估算成本
-- 路由决策和候选排除原因
-- 成功状态、错误代码与失败阶段
-
-因此可以明确知道“最终回答使用了哪个模型”“图片由哪个视觉模型识别”以及“一次调用为什么出现多条日志”，适合重视排障和成本归属的用户。
-
-### 5. 每个客户端只看到获得授权的模型
-
-客户端 Token 与供应商 API Key 完全分离。每个 Token 可以独立配置：
-
-- 可见和可调用的统一模型
-- `gateway:invoke`、`admin:access` 等 Scope
-- 有效期和启停状态
-- 预算归属
-
-客户端访问 `/v1/models` 时只会获取自己有权调用、且当前具有可用候选的统一模型。这样可以为个人电脑、不同软件或不同使用者创建独立凭据，而不暴露供应商密钥和无关模型。
-
-### 6. 能力声明与实际执行链保持一致
-
-APISwitch 分别管理输入和输出能力，并根据候选模型与已启用辅助工作流计算统一模型的有效能力。模型列表会返回视觉、文件、音频、工具和模态等扩展元数据，帮助支持这些字段的客户端识别模型能力。
-
-候选上的“能力覆盖”使用完全替换语义，避免继承关系含糊。辅助工作流关闭后，其补充能力也不会继续被当作可执行能力使用。
-
-### 7. Windows 使用路径更短
-
-APISwitch 提供单文件 `APISwitch-v<版本号>.exe`，无需先安装 Node.js、Docker 或数据库。桌面版包含：
-
-- 本地管理界面与网关
-- 系统托盘和单实例
-- 开机自启动
-- 8080 端口冲突自动回退
-- 本地加密密钥
-- 加密备份、恢复和 WebDAV
-
-对于只需要在 Windows 本机为 Cherry Studio、Codex、Claude Code 等客户端提供统一网关的用户，部署和日常操作更加直接。
-
-### 8. 管理界面围绕一条业务链设计
-
-APISwitch 的十项主导航按照实际配置顺序组织：供应商、上游模型、统一模型、辅助模型、预算、日志、用量、客户端和 Agent。它没有把大量插件、远程集群、MCP、A2A、压缩引擎和实验性 Provider 同时放入核心流程，因此更适合希望降低配置复杂度、逐层验证调用链的用户。
-
-### 选择建议
-
-选择 APISwitch，如果你更重视：
-
-- Windows 本机单文件运行
-- 稳定统一模型名和明确候选关系
-- 多协议语义保真与结构化错误
-- 视觉等辅助模型的显式配置和日志审计
-- 按客户端隔离模型权限、Token 和预算
-- 更少的核心概念和可逐层验证的配置流程
-
-选择 OmniRoute，如果你更需要其大量 Provider、OAuth/免费额度聚合、自动 Combo、Token 压缩、MCP/A2A、Docker/Linux/移动端和远程部署生态。两者不是简单的功能数量竞争，而是“广泛自动化平台”与“聚焦、可控的本地网关”之间的取向差异。
-
-## 工作原理
-
-```text
-Cherry Studio / Codex / Claude Code / 自建客户端
-                         │
-                         ▼
-             OpenAI / Anthropic / Gemini 入口
-                         │
-                         ▼
-       客户端 Token 鉴权、模型授权与能力检查
-                         │
-                         ▼
-      Canonical 请求 ── 辅助模型工作流（按需）
-                         │
-                         ▼
-       统一模型路由、预算、健康状态与失败切换
-                         │
-                         ▼
-       上游协议适配器 → 实际供应商和上游模型
-                         │
-                         ▼
-        Canonical 响应 → 客户端所需响应格式
-```
-
-客户端不会直接选择供应商实例或上游模型。它请求的是统一模型，APISwitch 根据能力、协议、健康、预算和路由策略选择实际上游，并把调用链写入日志。
-
-## 技术栈
-
-| 层级 | 技术 | 用途 |
-|---|---|---|
-| 后端 | Python 3.11+、FastAPI、Uvicorn、Pydantic | 管理 API、统一网关、配置与数据校验 |
-| 数据 | SQLAlchemy 2、Alembic、SQLite | 本地持久化、模型关系、日志、用量和预算 |
-| 网络与安全 | HTTPX、Cryptography | 上游请求、代理、密钥加密和安全备份 |
-| 前端 | Vue 3、TypeScript、Pinia、Vue Router | 管理界面与客户端状态 |
-| UI 与构建 | Naive UI、Vite、Vitest、Vue Test Utils | 组件、生产构建和前端测试 |
-| 桌面端 | pywebview、pystray、Pillow | Windows 窗口、托盘、单实例和自启动 |
-| 发布 | PyInstaller、PowerShell、GitHub Actions | 单文件 EXE、冒烟测试、SHA-256 和 Release |
-| 质量 | Pytest、Ruff、敏感信息扫描 | 后端测试、静态检查和发布安全门禁 |
-
-### 关键实现方法
-
-- **Canonical 协议内核**：先把不同客户端协议转换成统一请求，再转换为目标上游协议；响应按相反方向处理。
-- **能力驱动路由**：输入和输出能力分别管理，例如 `text`、`vision`、`files`、`audio`、`tools`、`reasoning`。
-- **有效能力计算**：统一模型的原生能力与已启用辅助工作流共同生成对外模型能力，`/v1/models` 和 Gemini 模型列表会返回相关元数据。
-- **协议保真原则**：不能可靠转换的字段返回结构化错误，不静默丢失可能改变语义的内容。
-- **本地密钥保护**：桌面版在用户目录生成主密钥，供应商 API Key、Token 和备份密码不明文写入仓库。
-- **可观测调用链**：主请求和辅助步骤使用父子日志关联，便于区分上游限流、能力不匹配、协议转换和辅助步骤失败。
-
-## Windows 安装与使用
-
-### 1. 安装
-
-1. 打开 [APISwitch v0.1.15 Release](https://github.com/BXXCAXCA/apiswitch/releases/tag/v0.1.15)。
-2. 下载 `APISwitch-v0.1.15.exe`；需要校验时同时下载 `.sha256.txt`。
-3. 运行 EXE。程序会启动本地网关并打开管理界面，关闭窗口后可继续驻留系统托盘。
-
-桌面版数据保存在：
-
-```text
-%USERPROFILE%\.apiswitch
-```
-
-默认优先使用 `http://127.0.0.1:8080`。如果 8080 已被占用，程序会自动选择可用端口；实际地址可在“客户端管理”页面查看和复制。
-
-### 2. 完成首次配置
-
-按以下顺序配置：
-
-1. **供应商**：添加供应商实例，填写 Base URL、协议、API Key、超时和代理等信息。
-2. **上游模型**：从供应商拉取模型，或手工添加；核对模型 ID、上下文和真实能力。
-3. **统一模型**：创建客户端要使用的稳定模型名，选择开放协议，并绑定一个或多个候选上游模型。
-4. **辅助模型**：需要视觉识别、文件提取等能力时，配置对应辅助模型和工作流。
-5. **客户端管理**：创建具有 `gateway:invoke` Scope 的 Token，选择该 Token 可以调用的统一模型；明文 Token 只显示一次。
-6. **客户端接入**：复制当前网关地址，在客户端中填写 Base URL、Token 和统一模型名。
-7. **调用日志**：发起请求后检查实际供应商、上游模型、路由、延迟、Token、成本和错误阶段。
-
-## 软件内配置指南
-
-### 仪表盘
-
-仪表盘用于快速确认系统是否正常工作，包括供应商、上游模型、统一模型、请求和最近错误等摘要。这里不需要填写配置；首次配置后如果数量或状态不符合预期，应进入对应页面检查对象是否已启用。
-
-### 供应商
-
-供应商页面分为“模板目录”和“供应商实例”。模板只是预填协议与地址，真正参与调用的是供应商实例。
-
-| 字段 | 填写方法 |
-|---|---|
-| 模板 | 优先选择与真实服务一致的模板；没有匹配项时使用手动模板。|
-| 实例名称 | 自定义易识别名称，例如 `SenseNova-主账号`，同一供应商可创建多个实例。|
-| 协议 | 手动模板需要选择 OpenAI-Compatible、Anthropic Messages、Gemini 或自定义协议。|
-| Base URL | 填供应商 API 根地址，不要填写具体模型名；保留模板要求的 `/v1` 或兼容路径。|
-| API Key | 填真实供应商密钥。创建后不再显示；编辑时留空表示保持原值。|
-| 超时 | 单位为秒。快速模型可使用 60–120，慢思考或媒体模型可适当提高。|
-| 代理类型/URL | 直连失败且网络环境允许时配置 HTTP/HTTPS 或 SOCKS5 代理。|
-| 自定义请求头 | JSON 对象，例如 `{"X-Organization":"team"}`；只填写供应商明确要求的请求头。|
-
-保存后点击“测试”。测试成功只表示地址、鉴权和模型目录能够访问，不代表每个模型、协议和账户额度都可用。模板标记为“兼容模式”或“未验证”时，应使用一条真实但不敏感的最小请求进一步验证。
-
-### 上游模型
-
-上游模型是供应商实际接受的模型 ID。先选择供应商并点击“拉取模型列表”；供应商不提供模型目录时可手工添加。
-
-| 字段 | 填写方法 |
-|---|---|
-| 模型 ID | 必须与供应商要求完全一致，包括大小写、命名空间和版本后缀。|
-| 显示名 | 仅供 APISwitch 界面展示，不会替代实际模型 ID。|
-| 输入能力 | 按真实支持情况选择文本、视觉、文件、音频、视频、工具结果或长上下文。|
-| 输出能力 | 按真实支持情况选择文本、工具、JSON、向量、图像、音频、视频、音乐、审核、重排或搜索。|
-| 上下文长度/最大输出 | 填供应商公布的 Token 上限；不确定时可以留空。|
-| 输入/输出/缓存价格 | 按每百万 Token 填写，用于成本、预算和成本优先路由。|
-| 标签 | 可填写 `free`、`fast` 等逗号分隔标签，方便识别模型特性。|
-
-“识别能力”根据模型名称和远端元数据推断，只是配置建议。低置信度结果必须人工核对，尤其不能仅凭模型名给纯文本模型勾选视觉能力。
-
-模型列表默认汇总全部供应商，也可按供应商筛选。可跨不同供应商勾选多个上游模型后执行“批量配置”，一次覆盖它们的输入/输出能力、上下文与最大输出、价格和标签；如果任一模型不存在，整批操作都会拒绝，不会产生部分更新。
-
-### 统一模型
-
-统一模型是客户端最终看到和调用的模型。稳定模型名一旦交给客户端使用，建议不要频繁修改；需要替换供应商时只调整候选上游模型。
-
-| 字段 | 含义与建议 |
-|---|---|
-| 稳定模型名 | 客户端请求中的 `model`，例如 `GLM-5.2`。|
-| 路由模式 | 静态和自动模式当前按候选优先级确定顺序；组合路由会应用所选 Combo 策略。|
-| 组合策略 | 支持优先级、加权、轮询、最少使用、成本优先、剩余额度优先和最近成功优先。|
-| 偏好档位 | 质量、均衡、速度或经济偏好，用于描述统一模型目标。|
-| 最小上下文 | 过滤上下文长度不足的候选。|
-| 最大延迟 | 过滤或约束不符合延迟目标的候选；单位为毫秒。|
-| 单次成本上限 | 限制可接受的估算请求成本。没有可靠价格时不要依赖该字段做严格控制。|
-| 会话粘性 | 客户端提供会话标识时，优先继续使用原候选，减少上下文跨模型差异。|
-| 入口协议 | 只勾选希望对客户端开放且能够可靠转换的协议。|
-| 必需输入/输出能力 | 定义该统一模型对外承诺的能力；候选或辅助工作流必须能够满足。|
-
-创建统一模型后，在“候选上游模型”区域完成绑定：
-
-- **上游模型（可多选）**：一次选择多个上游模型并原子添加为候选；已绑定模型不会再次出现在可选列表中。
-- **优先级**：拖动候选行调整顺序；越靠前优先级越高，默认策略和失败回退首先参考该顺序。
-- **权重**：仅加权策略使用；数值越大，被首次选中的概率越高。
-- **覆盖输入/输出能力（完全替换）**：留空表示继承上游模型能力；一旦勾选，该方向就以勾选结果完整替换上游声明，不是追加。只有同一上游模型在该统一模型下需要特殊限制时才使用。
-- **启用**：统一模型、候选、上游模型和供应商实例必须同时启用，客户端才能获取和调用模型。
-
-推荐先只绑定一个已验证候选并完成调用测试，再增加第二个候选和 Combo 策略。这样可以区分单一供应商问题与路由问题。
-
-### 辅助模型
-
-辅助模型用于补齐主模型缺少的输入或输出能力。可选择：
-
-- **关闭辅助模型**：只允许候选上游的原生能力。
-- **按统一模型独立配置**：每个统一模型使用自己的辅助池和工作流。
-- **使用全局辅助模型池**：多个统一模型共用辅助模型，适合先完成统一配置。
-
-配置辅助模型池时，选择实际承担辅助任务的上游模型，核对“模型能力”，并设置优先级。优先级数字越小越先尝试；遇到供应商限流、额度耗尽、停用或能力不匹配时，才会继续选择其他可用辅助候选。
-
-配置工作流时：
-
-1. 选择预设工作流，例如“图像转文本”。
-2. 视觉识别通常设置为输入 `vision`、输出 `text`。
-3. 设置工作流顺序，数字越小越先执行。
-4. “有序步骤 JSON”必须是数组。单步视觉示例：
-
-```json
-[{"input":"vision","output":"text"}]
-```
-
-5. 保存后在“模拟匹配结果”选择统一模型和所需能力，确认结果包含可执行的辅助模型与步骤。
-
-视觉辅助的典型流程是“客户端图像 → 视觉辅助模型生成描述 → 描述注入主模型请求 → 主模型回答”。辅助模型必须真正支持图像输入；统一模型本身不应通过候选能力覆盖伪造视觉能力。
-
-### 预算控制
-
-| 字段 | 配置说明 |
-|---|---|
-| 计费方式 | “Token 成本”依赖价格配置；“调用条数”不依赖供应商价格。|
-| 统计周期 | 支持滚动 5 小时，以及 UTC+8 的自然日、自然周和自然月。|
-| 作用范围 | 可应用于全局、客户端 Token、统一模型、供应商或供应商的上游模型。|
-| 上限 | Token 成本模式填金额，调用条数模式填允许的请求数。|
-| 告警阈值 | 达到上限百分比后显示告警，例如 `80`。|
-| 超限动作 | 仅告警、拒绝请求、回退免费候选或回退最低价候选。|
-
-使用成本预算前，应先在“价格与用量”核对上游模型价格。没有价格的模型可能导致成本估算不完整。免费/最低价回退仍受统一模型能力、协议和候选启用状态限制，不会绕过能力检查。
-
-### 调用日志
-
-日志可按协议、统一模型、供应商、上游模型、成功/失败、主调用/辅助调用、成本范围和客户端名称筛选。
-
-排查问题建议按此顺序查看详情：
-
-1. 确认是主调用还是辅助调用，以及父请求 ID 是否一致。
-2. 查看统一模型最终选择了哪个供应商和上游模型。
-3. 查看候选排除原因、重试链和辅助步骤摘要。
-4. 根据失败阶段区分 Token 鉴权、能力检查、路由、协议转换、上游 HTTP、响应解析或辅助步骤错误。
-5. HTTP 429 优先检查对应供应商账户额度、并发与速率限制，不要通过增加重试掩盖持续限流。
-
-一次用户操作可能产生一条主调用日志和一条或多条辅助步骤日志，这是父子调用记录，不是同一请求被客户端重复发送。
-
-### 价格与用量
-
-页面可以按供应商、上游模型、统一模型、入口协议或客户端 Token 聚合请求、成功数、Token 和估算成本。
-
-手工价格覆盖字段按每百万 Token 计价：输入价格、输出价格和可选的缓存输入价格。币种应与预算币种一致；“来源”建议填写供应商价格页名称和日期，例如 `provider pricing 2026-08`，便于以后更新。
-
-### 客户端管理
-
-页面顶部显示当前实际网关地址，可点击“复制网关地址”。创建客户端 Token 时：
-
-| 字段 | 建议 |
-|---|---|
-| 名称 | 使用客户端或设备名称，例如 `CherryStudio-台式机`。|
-| Scopes | 普通客户端只选择 `gateway:invoke`；不要无必要授予 `admin:access`。|
-| 可用统一模型 | 必须至少选择需要调用的模型；不选择时模型不可见且不可调用。|
-| 有效期 | 长期本机使用可留空；临时测试和共享设备建议设置过期时间。|
-| 预算归属 | 可绑定已创建的预算；也可通过预算页面直接按 Token 设置范围。|
-| 启用 | 停用后该 Token 立即不能调用网关。|
-
-Token 明文只在创建或重置时显示一次。复制后再关闭提示；重置会使旧 Token 立即失效，必须同步更新所有客户端。
-
-### Agent 配置
-
-当前支持 Claude Code、Codex、OpenCode、OpenClaw、Hermes、Gemini CLI 和 Langcli。
-
-1. 选择 Agent 类型，界面只显示支持该 Agent 所需入口协议的统一模型。
-2. 检查配置路径；留空时使用界面提示的默认路径。
-3. 选择主模型。Claude Code 还可分别指定 Opus、Sonnet、Haiku，留空则使用主模型。
-4. 选择“自动创建独立 Key”，或从客户端管理中手动选择已有 API Key。首次手动绑定时需输入一次明文进行哈希校验。
-5. 先点击“预览”，确认 Base URL、模型名、文件格式和目标路径。
-6. 点击“备份并写入”。软件会先备份原文件，再合并 APISwitch 配置。
-7. 出现问题时使用“恢复上次备份”。
-
-API Key 明文直接写入 Agent 所支持的配置字段。Claude Code 和 Langcli 的配置格式使用配置文件内部的 `env` 节，用户不需要设置 Windows 或 Shell 环境变量。端口变化后，已启用的 Agent 配置会先备份，再更新网关地址。
-
-### 系统设置（高级页面）
-
-在浏览器地址中打开 `/settings`。该页面不显示在左侧主导航，包含：
-
-- **运行信息**：当前网关、监听地址、数据目录、版本、Schema、主密钥和系统平台。
-- **网关服务**：关闭后停止接收所有模型调用，但管理界面和本地数据仍可访问。
-- **Windows 桌面**：开机自启动和单实例状态。
-- **运行参数**：首选端口和上传字节上限；端口修改通常在服务重启后生效。
-- **全量加密备份**：使用独立备份密码创建归档；该密码不是供应商 API Key 或主密钥。
-- **恢复**：先执行差异预览；确认归档和密码正确后，勾选替换确认再恢复。恢复会改变本地数据，应保留恢复前备份。
-- **WebDAV**：分别填写服务器 URL、用户名、WebDAV 密码和独立备份密码；远端只上传加密归档。
-- **系统诊断**：生成不含密钥、数据库和请求正文的诊断摘要，用于排查环境问题。
-
-## 客户端接入
-
-### OpenAI-Compatible 客户端
-
-在 Cherry Studio 等客户端中新建 OpenAI-Compatible/自定义 OpenAI 供应商：
-
-| 配置项 | 值 |
-|---|---|
-| Base URL | `http://127.0.0.1:8080/v1`，或“客户端管理”中复制的实际地址加 `/v1` |
-| API Key | 在“客户端管理”创建的客户端 Token |
-| API 格式 | Chat Completions 或 Responses |
-| 模型 ID | 统一模型名称，例如 `GLM-5.2`，不是供应商的上游模型 ID |
-
-如果客户端会在已含 `/v1` 的 Base URL 后再次追加 `/v1/messages`，网关会兼容一个重复的 `/v1` 前缀。
-
-### OpenAI Chat Completions 示例
+Requirements: Windows PowerShell and Python 3.11+. Node.js/npm is needed only when starting from a
+source checkout without a prebuilt `frontend/dist` directory.
 
 ```powershell
-$baseUrl = "http://127.0.0.1:8080"
-$clientToken = "替换为客户端管理中创建的 Token"
-$body = @{
-    model = "替换为统一模型名称"
-    messages = @(@{ role = "user"; content = "你好" })
-    stream = $false
-} | ConvertTo-Json -Depth 10
-
-Invoke-RestMethod `
-    -Uri "$baseUrl/v1/chat/completions" `
-    -Method Post `
-    -Headers @{ Authorization = "Bearer $clientToken" } `
-    -ContentType "application/json" `
-    -Body $body
+.\scripts\start-plugin.ps1
 ```
 
-### 支持的主要入口
+The command returns JSON with the local management UI and gateway addresses. The plaintext Harness
+key is not printed.
 
-| 客户端协议 | 端点 |
-|---|---|
-| OpenAI 模型列表 | `GET /v1/models` |
-| OpenAI Chat Completions | `POST /v1/chat/completions` |
-| OpenAI Responses | `POST /v1/responses` |
-| Anthropic Messages | `POST /v1/messages` |
-| Gemini 模型列表 | `GET /v1beta/models` |
-| Gemini Generate Content | `POST /v1beta/models/{model}:generateContent` |
-| Gemini 流式生成 | `POST /v1beta/models/{model}:streamGenerateContent` |
-
-Files、Images、Audio、Embeddings、Moderations、Rerank、Search、Batches、WebSocket、Video 和 Music 也有统一网关入口；能否调用取决于统一模型声明、候选上游能力和协议可转换性。
-
-## Agent 配置
-
-“Agent 配置”支持为每个 Agent 选择一个默认模型和多个可用模型。API Key 可以自动创建为仅属于该 Agent 的独立 Key，也可以从“客户端管理”手动选择已有 Key。自动模式会把所选模型作为独立 Key 的允许列表；手动模式不会修改共享 Key 的模型权限，所选 Agent 模型必须已经得到该 Key 授权。数据库只保存哈希，因此首次手动绑定或更换 Key 时需要输入一次明文进行校验。明文直接写入目标配置文件。预览结果可以在页面中编辑，写入前会校验格式并备份原文件，自动模式也可以显式轮换独立 Key。
-
-Claude Code 和 Langcli 需要在各自配置文件的 `env` 节中引用密钥，这是客户端格式要求；APISwitch 会把明文同时写在同一配置文件中，用户不需要设置 Windows、Shell 或启动进程环境变量。Codex、OpenCode、OpenClaw、DeepSeek Harness、Hermes 和 Gemini CLI 同样直接写入各自支持的明文字段或请求头。
-
-## 视觉和思考能力
-
-### 视觉辅助
-
-当统一模型配置了视觉辅助工作流时，无视觉主模型收到图像后，可以先由视觉辅助模型生成文本描述，再把描述交给主模型。模型列表会根据有效能力返回 `vision`、`image-recognition` 和输入模态元数据，帮助支持这些字段的客户端识别视觉能力。
-
-DeepSeek Harness 不会从 OpenAI 模型列表推断图像输入能力。请在“Agent 配置”中选择 `DeepSeek Harness` 和需要使用的多个模型并写入配置；APISwitch 会备份并合并 `~/.dsh/settings.yaml`，为所选模型同步 `input`，写入供应商级 `defaultInput`，并通过明文 `Authorization` 请求头使用自动创建或手动选择的 Agent Key。这样切换模型后，`read_image` 仍能把图片交给视觉辅助工作流。
-
-工具调用是多轮能力：只要统一模型或候选声明能够输出 `tools`，APISwitch 就会自动视为能够接收下一轮 `tool_results`。旧配置无需手工补字段，Agent 执行文件检索等工具后不会再因该配对能力缺失而被本地能力检查拒绝。
-
-客户端仍可能只根据自己的内置模型数据库显示图标或筛选标签；这不代表网关没有返回能力。排查时应同时检查 `/v1/models` 响应和 APISwitch 调用日志中的辅助步骤。
-
-同一统一模型的多个候选都调用失败时，网关会返回 `all_upstream_candidates_failed`，并汇总各候选的供应商、模型和 HTTP 状态。额度不足（429）、模型/路由不存在（404）及协议方法不兼容（405）的候选会立即进入冷却，避免每次请求重复撞击已知不可用的上游。
-
-### 思考模式
-
-- OpenAI Chat 的 `reasoning_effort` 会进入 Canonical 参数，并可透传给支持该参数的 OpenAI-Compatible 上游。
-- OpenAI Responses 的 `reasoning.effort` 会转换为统一的思考强度参数。
-- 客户端界面显示“高”或“最高”并不保证它实际发送了思考参数，应以调用请求和日志为准。
-- Anthropic/Gemini 与其他上游对思考强度、预算和返回内容的定义不同；只有能够可靠映射且模型实际支持时才会生效，否则可能被上游拒绝。
-
-## 管理界面
-
-左侧主导航依次为：
-
-1. 仪表盘
-2. 供应商
-3. 上游模型
-4. 统一模型
-5. 辅助模型
-6. 预算控制
-7. 调用日志
-8. 价格与用量
-9. 客户端管理
-10. Agent 配置
-
-系统设置保留为高级直达页面 `/settings`，不显示在左侧主导航中。内部路由诊断 API 仍用于自动化测试和故障排查，但不再提供独立“路由状态”页面。
-
-## 从源码运行
-
-### 环境要求
-
-- Windows 10/11 x64
-- Python 3.11 或更高版本
-- Node.js 22 或兼容版本
-- PowerShell 5.1 或 PowerShell 7
-
-### 安装依赖
+Connect a workspace:
 
 ```powershell
-git clone https://github.com/BXXCAXCA/apiswitch.git
-Set-Location apiswitch
+.\scripts\connect-harness.ps1 -Workspace C:\absolute\path\to\workspace
+```
 
-python -m venv backend\.venv
-& backend\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt -r requirements-dev.txt
+This updates only these entries in the workspace's `.env` file:
 
-Push-Location frontend
+```dotenv
+DEEPSEEK_BASE_URL=http://127.0.0.1:<port>/v1
+DEEPSEEK_API_KEY=<plugin-managed-local-key>
+```
+
+Stop the gateway without deleting configuration:
+
+```powershell
+.\scripts\stop-plugin.ps1
+```
+
+## Configure models
+
+1. Add one or more provider instances.
+2. Pull or add their upstream models.
+3. Create Harness-facing unified model names, such as `deepseek-v4-pro` or
+   `deepseek-v4-flash`.
+4. Bind candidates from any provider and drag them into failover priority order.
+5. Optionally add vision, file, audio, or context auxiliary workflows.
+6. Connect the target workspace and start DeepSeek Harness normally.
+
+The dedicated Harness key sees all enabled unified models automatically. No client token or generic
+Agent configuration step is required.
+
+## Development checks
+
+```powershell
+python -m pytest backend/tests -q
+python -m ruff check backend --select F,E9
+Set-Location frontend
 npm ci
-Pop-Location
+npm run test
+npm run build
 ```
 
-源码模式保存供应商密钥前，应在当前 PowerShell 会话设置主密钥：
-
-```powershell
-$env:APISWITCH_MASTER_KEY = & backend\.venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-### 启动完整本地服务
-
-```powershell
-.\scripts\start-local.ps1 -RebuildFrontend
-```
-
-默认入口：
-
-- 管理界面：`http://127.0.0.1:8080/ui/`
-- API 文档：`http://127.0.0.1:8080/docs`
-- 健康检查：`http://127.0.0.1:8080/health`
-
-前后端热开发可使用：
-
-```powershell
-.\scripts\dev.ps1
-```
-
-## 测试、构建与发布
-
-运行后端测试、前端测试和生产构建：
-
-```powershell
-.\scripts\test.ps1
-backend\.venv\Scripts\python.exe -m ruff check backend --select F,E9
-backend\.venv\Scripts\python.exe scripts\scan-sensitive.py .
-git diff --check
-```
-
-构建 Windows 单文件版本并执行桌面冒烟测试：
-
-```powershell
-.\scripts\package-desktop.ps1 -Clean
-.\scripts\verify-desktop-package.ps1
-```
-
-输出文件：
-
-```text
-dist\APISwitch-v<版本号>.exe
-dist\APISwitch-v<版本号>.sha256.txt
-```
-
-推送 `main` 后，GitHub Actions 会运行后端、前端、Ruff、敏感信息扫描、Windows 打包和桌面冒烟；全部成功后自动创建或更新与源码版本一致的 GitHub Release。
-
-## 数据与安全注意事项
-
-- 不要把真实供应商 API Key、客户端 Token、主密钥、备份密码或完整敏感响应提交到 Git。
-- 客户端 Token 与供应商 API Key 完全分离；前者只用于访问 APISwitch 网关。
-- 明文客户端 Token 只在创建或重置时返回一次，请及时保存并更新客户端。
-- 默认只监听本机回环地址。远程监听必须同时启用管理端鉴权，并自行配置防火墙和可信反向代理。
-- 自动化测试只使用 Mock、模拟 HTTP 上游和固定协议样例，不代表所有真实供应商行为均已验证。
-- 真实上游的 HTTP 429 通常表示账户额度、速率或并发限制，应结合调用日志中的供应商和上游模型排查。
-
-## 当前限制
-
-- 辅助步骤已记录独立日志、Token、成本和延迟，但“辅助步骤成本进入预算上限并触发预算动作”仍是延期项。
-- 不同供应商对思考、工具调用、媒体和流式事件的扩展字段并不一致；无法可靠转换时网关会返回结构化错误。
-- 客户端是否展示视觉、思考等标签还取决于客户端是否读取模型列表中的扩展能力字段。
-
-## 文档
-
-- [文档索引](docs/README.md)
-- [产品需求](docs/01-product-requirements.md)
-- [信息架构](docs/02-information-architecture.md)
-- [系统架构](docs/03-system-architecture.md)
-- [协议、路由与辅助模型](docs/05-protocol-routing.md)
-- [API 契约](docs/08-api-contracts.md)
-- [历史资料归档](docs/archive/README.md)
+The GitHub Actions workflow validates the backend, frontend, sensitive-data scan, plugin manifest,
+and distributable plugin archive.

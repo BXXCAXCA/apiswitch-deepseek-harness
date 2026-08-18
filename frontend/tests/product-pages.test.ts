@@ -382,31 +382,6 @@ describe('generation two product pages', () => {
     getMock.mockImplementation(async () => [] as any)
   })
 
-  it('persists Windows startup immediately when the switch changes', async () => {
-    const getMock = vi.mocked(getJson)
-    const patchMock = vi.mocked(patchJson)
-    getMock.mockImplementation(async (url: string) => {
-      if (url === '/api/admin/runtime') return { desktop: true } as any
-      if (url === '/api/admin/settings') return {} as any
-      if (url === '/api/admin/settings/startup') return { enabled: false, command: null } as any
-      return [] as any
-    })
-    patchMock.mockResolvedValueOnce({ enabled: true, command: 'APISwitch.exe --background' } as any)
-
-    const wrapper = mountWithMessage(SystemSettingsV2View)
-    await flushPromises()
-    const startupSwitch: any = wrapper.findComponent('[data-testid="startup-switch"]')
-    startupSwitch.vm.$emit('update:value', true)
-    await flushPromises()
-
-    expect(patchMock).toHaveBeenCalledWith('/api/admin/settings/startup', { enabled: true })
-    expect(startupSwitch.props('value')).toBe(true)
-    expect(wrapper.text()).toContain('关闭窗口会驻留系统托盘')
-    wrapper.unmount()
-    patchMock.mockClear()
-    getMock.mockImplementation(async () => [] as any)
-  })
-
   it('keeps full Prompt and Response logging off by default and lets settings enable it', async () => {
     const getMock = vi.mocked(getJson)
     const patchMock = vi.mocked(patchJson)
@@ -683,28 +658,25 @@ describe('generation two product pages', () => {
     getMock.mockImplementation(async () => [] as any)
   })
 
-  it('shows the requested log columns and client name without failure-stage or cost columns', async () => {
+  it('shows Harness log columns without client-management filters', async () => {
     const getMock = vi.mocked(getJson)
     getMock.mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/admin/logs?')) return [{ request_id: 'req_unit', request_kind: 'auxiliary', parent_request_id: 'req_parent', inbound_protocol: 'auxiliary', provider_name: '供应商 A', upstream_model_name: 'model-a', unified_model: 'stable-a', api_token_id: 7, api_token_name: '桌面客户端', success: true, latency_ms: 12.3, started_at: '2026-07-18T00:00:00Z' }] as any
-      if (url === '/api/admin/tokens') return [{ id: 7, name: '桌面客户端', prefix: 'ask_unit' }] as any
+      if (url.startsWith('/api/admin/logs?')) return [{ request_id: 'req_unit', request_kind: 'auxiliary', parent_request_id: 'req_parent', inbound_protocol: 'auxiliary', provider_name: '供应商 A', upstream_model_name: 'model-a', unified_model: 'stable-a', api_token_id: 7, api_token_name: 'DeepSeek Harness', success: true, latency_ms: 12.3, started_at: '2026-07-18T00:00:00Z' }] as any
       return [] as any
     })
     const wrapper = mountWithMessage(LogsView)
     await flushPromises()
     const table: any = wrapper.findComponent('[data-testid="log-table"]')
-    expect(table.props('columns').map((column: any) => column.title)).toEqual(['请求 ID', '调用类型', '协议', '供应商', '上游模型', '统一模型', '客户端名称', '状态', '延迟', '时间（UTC+8）', '操作'])
+    expect(table.props('columns').map((column: any) => column.title)).toEqual(['请求 ID', '调用类型', '协议', '供应商', '上游模型', '统一模型', '来源', '状态', '延迟', '时间（UTC+8）', '操作'])
     expect(table.props('pagination')).toBe(false)
     expect(wrapper.find('[data-testid="log-top-scrollbar"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="log-pagination"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="log-table-controls"]').text()).toContain('应用筛选')
-    expect(wrapper.text()).toContain('桌面客户端')
+    expect(wrapper.text()).toContain('DeepSeek Harness')
     expect(wrapper.text()).toContain('辅助')
     expect(wrapper.text()).not.toContain('失败阶段')
     expect(table.props('columns').some((column: any) => column.title === '成本')).toBe(false)
-    const clientFilter: any = wrapper.findComponent('[data-testid="log-client-filter"]')
-    expect(clientFilter.props('placeholder')).toBe('客户端名称（可选）')
-    expect(clientFilter.props('options')).toEqual([{ label: '桌面客户端', value: 7 }])
+    expect(wrapper.find('[data-testid="log-client-filter"]').exists()).toBe(false)
     wrapper.unmount()
     getMock.mockImplementation(async () => [] as any)
   })

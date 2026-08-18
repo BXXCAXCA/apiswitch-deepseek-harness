@@ -9,6 +9,7 @@ if TEST_DB_PATH.exists():
     TEST_DB_PATH.unlink()
 os.environ["APISWITCH_DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH.as_posix()}"
 os.environ["APISWITCH_MASTER_KEY"] = "cU-mD4vAJMmm-gR87R3acjRkCMpSWxESn4S6-sQGD7o="
+os.environ["APISWITCH_PLUGIN_MODE"] = "false"
 
 from apiswitch.app import app  # noqa: E402
 from apiswitch.db.base import Base  # noqa: E402

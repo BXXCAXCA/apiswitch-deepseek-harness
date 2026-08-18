@@ -1,0 +1,32 @@
+{
+  "name": "apiswitch-deepseek-harness",
+  "version": "0.1.0",
+  "description": "Run APISwitch as the local multi-provider gateway for DeepSeek Harness.",
+  "author": {
+    "name": "BXXCAXCA",
+    "url": "https://github.com/BXXCAXCA"
+  },
+  "homepage": "https://github.com/BXXCAXCA/apiswitch-deepseek-harness",
+  "repository": "https://github.com/BXXCAXCA/apiswitch-deepseek-harness",
+  "keywords": ["deepseek", "harness", "gateway", "routing", "models"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "APISwitch for DeepSeek Harness",
+    "shortDescription": "Route Harness across providers and models.",
+    "longDescription": "Starts a loopback-only APISwitch gateway for DeepSeek Harness, manages its dedicated local credential, and exposes provider, unified-model, fallback, auxiliary-model, budget, and log controls without generic client or Agent configuration pages.",
+    "developerName": "BXXCAXCA",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Multi-provider model routing",
+      "DeepSeek Harness workspace connection",
+      "Auxiliary model workflows",
+      "Local usage and failure logs"
+    ],
+    "defaultPrompt": [
+      "Start APISwitch for DeepSeek Harness and show the local UI.",
+      "Connect this workspace's DeepSeek Harness to APISwitch.",
+      "Check the APISwitch Harness gateway status."
+    ],
+    "brandColor": "#19DDEB"
+  }
+}

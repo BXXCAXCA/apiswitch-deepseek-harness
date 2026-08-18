@@ -13,17 +13,26 @@ from sqlalchemy.orm import Session
 
 from apiswitch.api.deps import get_db
 from apiswitch.catalog.templates import get_template, list_templates
+from apiswitch.config import settings
 from apiswitch.db.base import utc_now
 from apiswitch.db.models import AgentConfig, ApiToken, ApiTokenUnifiedModel, AuxiliaryModel, AuxiliarySettings, AuxiliaryWorkflow, Budget, CircuitBreaker, ProviderHealth, ProviderInstance, QuotaSnapshot, RequestLog, SchemaMetadata, SystemSetting, UnifiedModel, UnifiedModelCandidate, UpstreamModel, UsageHistory
 from apiswitch.routing.engine import plan_auxiliary, protocol_matrix, route_candidates, structured_error
 from apiswitch.routing.capabilities import ALL_CAPABILITIES, infer_model_characteristics, normalize_capabilities, normalize_capability_map, normalize_workflow_steps
 from apiswitch.security.crypto import SecretCryptoError, secret_crypto
 from apiswitch.security.tokens import generate_api_token, hash_api_token, token_prefix
+from apiswitch.harness_runtime import harness_token_path
 from apiswitch.security.outbound import OutboundURLRejected,validate_outbound_url
 from apiswitch.services.budget_enforcement import budget_limit_value, budget_usage_value, refresh_budget_period
 from apiswitch.db.models import WebDAVProfile, WebDAVSyncLog
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+
+
+def _runtime_data_dir():
+    if settings.plugin_mode:
+        return harness_token_path().parent
+    from apiswitch.desktop import _runtime_dir
+    return _runtime_dir()
 
 
 def _error(code: str, message: str, stage: str = "validation", details: dict[str, Any] | None = None) -> HTTPException:
@@ -123,13 +132,24 @@ def _model_out(row: UpstreamModel,db:Session|None=None) -> dict[str, Any]:
 
 @router.get("/runtime")
 def runtime(db: Session = Depends(get_db)) -> dict[str, Any]:
-    from apiswitch.desktop import runtime_info
     from apiswitch import __version__
     import platform
     from pathlib import Path
-    info=runtime_info();data=Path(str(info.get("data_directory")))
+    if settings.plugin_mode:
+        data=harness_token_path().parent
+        info={
+            "base_url":f"http://{settings.listen_host}:{settings.port}",
+            "port":settings.port,
+            "data_directory":str(data),
+            "desktop":False,
+            "plugin_mode":True,
+        }
+    else:
+        from apiswitch.desktop import runtime_info
+        info=runtime_info();data=Path(str(info.get("data_directory")))
     generation = db.scalar(select(SchemaMetadata.generation).order_by(SchemaMetadata.generation.desc()))
-    return {**info, "version":__version__,"schema_generation": generation, "single_instance": True,"listen_host":"127.0.0.1","master_key_status":"configured" if (data/"master.key").is_file() else "environment_or_not_initialized","database_status":"ready" if (data/"apiswitch.db").is_file() else "development","platform":platform.platform(),"python_runtime":"bundled" if getattr(__import__("sys"),"frozen",False) else "development"}
+    database_path=Path(settings.database_url.removeprefix("sqlite:///")) if settings.database_url.startswith("sqlite:///") else None
+    return {**info, "version":__version__,"schema_generation": generation, "single_instance": True,"listen_host":settings.listen_host,"master_key_status":"configured" if settings.master_key or (data/"master.key").is_file() else "environment_or_not_initialized","database_status":"ready" if database_path and database_path.is_file() else "development","platform":platform.platform(),"python_runtime":"bundled" if getattr(__import__("sys"),"frozen",False) else "development"}
 
 
 @router.get("/diagnostics")
@@ -994,9 +1014,8 @@ def update_startup(payload:dict[str,Any]=Body(...))->dict[str,Any]:
 @router.post("/database/backup")
 def database_backup(payload:dict[str,Any]=Body(default={})) -> dict[str,Any]:
     from pathlib import Path
-    from apiswitch.desktop import _runtime_dir
     from apiswitch.backup.archive import BackupError,create_archive
-    root=_runtime_dir(); destination=Path(payload.get("destination") or root/"backups"/f"backup-{utc_now().strftime('%Y%m%dT%H%M%SZ')}.apsbak")
+    root=_runtime_data_dir(); destination=Path(payload.get("destination") or root/"backups"/f"backup-{utc_now().strftime('%Y%m%dT%H%M%SZ')}.apsbak")
     try:return create_archive(root,str(payload.get("backup_password", "")),destination)
     except BackupError as exc:raise _error("webdav_backup_invalid",str(exc),"backup") from exc
 
@@ -1004,13 +1023,12 @@ def database_backup(payload:dict[str,Any]=Body(default={})) -> dict[str,Any]:
 @router.post("/database/restore")
 def database_restore(payload:dict[str,Any]=Body(...))->dict[str,bool]:
     from pathlib import Path
-    from apiswitch.desktop import _runtime_dir
     from apiswitch.backup.archive import BackupError,restore_archive
     from apiswitch.db.session import engine
     if payload.get("confirm") is not True:raise _error("confirmation_required","恢复会替换本地数据，必须显式确认","restore")
     try:
         engine.dispose()
-        restore_archive(_runtime_dir(),str(payload.get("backup_password","")),Path(payload["archive_path"]))
+        restore_archive(_runtime_data_dir(),str(payload.get("backup_password","")),Path(payload["archive_path"]))
     except BackupError as exc:
         code="database_generation_mismatch" if str(exc)=="database_generation_mismatch" else "webdav_backup_invalid"
         raise _error(code,"数据库 generation 不兼容" if code=="database_generation_mismatch" else str(exc),"restore") from exc
@@ -1378,11 +1396,10 @@ def webdav_preview(payload:dict[str,Any]=Body(...))->dict[str,Any]:
     import hashlib
     from pathlib import Path
     from apiswitch.backup.archive import inspect_archive
-    from apiswitch.desktop import _runtime_dir
     path=Path(payload["archive_path"])
     try:metadata=inspect_archive(path,str(payload.get("backup_password","")))
     except Exception as exc:raise _error("webdav_backup_invalid",str(exc),"webdav_preview") from exc
-    local=_runtime_dir();declared={item["path"]:item["sha256"] for item in metadata["files"]};conflicts=[]
+    local=_runtime_data_dir();declared={item["path"]:item["sha256"] for item in metadata["files"]};conflicts=[]
     for relative,expected in declared.items():
         current=local.joinpath(*relative.split("/"))
         if current.is_file() and hashlib.sha256(current.read_bytes()).hexdigest()!=expected:conflicts.append(relative)
@@ -1413,11 +1430,10 @@ def webdav_upload(payload:dict[str,Any]=Body(...),db:Session=Depends(get_db))->d
 @router.post("/webdav/download")
 def webdav_download(payload:dict[str,Any]=Body(...),db:Session=Depends(get_db))->dict[str,Any]:
     from pathlib import Path
-    from apiswitch.desktop import _runtime_dir
     from apiswitch.backup.webdav import download
     row=db.get(WebDAVProfile,int(payload["profile_id"]))
     if not row or not row.enabled:raise _error("validation_error","WebDAV 配置不存在或已禁用")
-    remote_path=str(payload["remote_path"]); destination=_runtime_dir()/"backups"/"downloads"/Path(remote_path).name
+    remote_path=str(payload["remote_path"]); destination=_runtime_data_dir()/"backups"/"downloads"/Path(remote_path).name
     try:download(row.url,remote_path,row.username,secret_crypto.decrypt(row.password_encrypted) if row.password_encrypted else None,destination)
     except Exception as exc:
         db.add(WebDAVSyncLog(profile_id=row.id,direction="download",success=False,error_message=str(exc)));db.commit();raise _error("webdav_download_failed",str(exc),"webdav_download") from exc

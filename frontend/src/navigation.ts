@@ -7,7 +7,5 @@ export const productNavigation = [
   { label: '预算控制', path: '/budgets' },
   { label: '调用日志', path: '/logs' },
   { label: '价格与用量', path: '/accounting' },
-  { label: '客户端管理', path: '/tokens' },
-  { label: 'Agent 配置', path: '/agents' },
   { label: '系统设置', path: '/settings' }
 ] as const

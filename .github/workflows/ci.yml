@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -69,100 +67,85 @@ jobs:
       - name: Scan tracked source and documentation
         run: python scripts/scan-sensitive.py .
 
-  package-windows:
-    name: Windows one-file package and smoke test
-    needs:
-      - backend
-      - frontend
-      - sensitive-scan
+  package-plugin:
+    name: Package and smoke-test plugin
+    needs: [backend, frontend, sensitive-scan]
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
     env:
       PYTHONUTF8: '1'
+      APISWITCH_HARNESS_DATA_DIR: ${{ github.workspace }}\plugin-runtime
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Read APISwitch version
+      - name: Read plugin version
         id: version
         shell: pwsh
         run: |
-          . ./scripts/version.ps1
-          $version = Get-APISwitchVersion -RepositoryRoot (Get-Location).Path
-          "APISWITCH_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - name: Install Python dependencies
-        run: python -m pip install --upgrade pip -r requirements.txt -r requirements-dev.txt
-      - name: Install frontend dependencies
+          $manifest = Get-Content -Raw .codex-plugin/plugin.json | ConvertFrom-Json
+          "value=$($manifest.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Validate plugin structure
+        shell: pwsh
+        run: ./scripts/validate-plugin.ps1
+      - name: Build frontend
         working-directory: frontend
-        run: npm ci
-      - name: Build APISwitch.exe
+        run: npm ci && npm run build
+      - name: Start plugin gateway
         shell: pwsh
-        run: ./scripts/package-desktop.ps1 -Clean
-      - name: Verify packaged health, UI, port fallback, and single instance
-        shell: pwsh
-        run: ./scripts/verify-desktop-package.ps1
-      - name: Preserve diagnostic reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: APISwitch-desktop-diagnostics-v${{ env.APISWITCH_VERSION }}
-          path: dist/diagnostics/*.json
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Scan packaged executable
-        run: python scripts/scan-sensitive.py dist/APISwitch-v${{ env.APISWITCH_VERSION }}.exe
-      - name: Record SHA-256
+        run: ./scripts/start-plugin.ps1
+      - name: Verify workspace connection and gateway
         shell: pwsh
         run: |
-          $exe = "./dist/APISwitch-v$($env:APISWITCH_VERSION).exe"
-          $checksum = "./dist/APISwitch-v$($env:APISWITCH_VERSION).sha256.txt"
-          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash
-          "${hash}  APISwitch-v$($env:APISWITCH_VERSION).exe" | Set-Content -Encoding ascii $checksum
-          Get-Item $exe | Select-Object Name, Length
-          Get-Content $checksum
+          New-Item -ItemType Directory -Force smoke-workspace | Out-Null
+          ./scripts/connect-harness.ps1 -Workspace ./smoke-workspace
+          $runtime = Get-Content -Raw "$env:APISWITCH_HARNESS_DATA_DIR/runtime.json" | ConvertFrom-Json
+          $token = (Get-Content -Raw "$env:APISWITCH_HARNESS_DATA_DIR/harness.token").Trim()
+          $models = Invoke-RestMethod -Uri "http://127.0.0.1:$($runtime.port)/v1/models" -Headers @{ Authorization = "Bearer $token" }
+          if ($models.object -ne 'list') { throw 'Plugin model endpoint failed.' }
+          if ((Get-Content -Raw ./smoke-workspace/.env) -notmatch 'DEEPSEEK_BASE_URL=') { throw 'Workspace connection failed.' }
+      - name: Stop plugin gateway
+        if: always()
+        shell: pwsh
+        run: ./scripts/stop-plugin.ps1
+      - name: Package plugin archive
+        shell: pwsh
+        run: ./scripts/package-plugin.ps1 -Clean
       - uses: actions/upload-artifact@v4
         with:
-          name: APISwitch-windows-x64-v${{ env.APISWITCH_VERSION }}
-          path: |
-            dist/APISwitch-v${{ env.APISWITCH_VERSION }}.exe
-            dist/APISwitch-v${{ env.APISWITCH_VERSION }}.sha256.txt
-            dist/diagnostics/*.json
+          name: APISwitch-DeepSeek-Harness-v${{ steps.version.outputs.value }}
+          path: dist/APISwitch-DeepSeek-Harness-v${{ steps.version.outputs.value }}.zip
           if-no-files-found: error
           retention-days: 14
 
   release:
     name: Publish GitHub Release
-    needs: package-windows
+    needs: package-plugin
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download release assets
+      - name: Download plugin archive
         uses: actions/download-artifact@v4
         with:
-          name: APISwitch-windows-x64-v${{ needs.package-windows.outputs.version }}
+          name: APISwitch-DeepSeek-Harness-v${{ needs.package-plugin.outputs.version }}
           path: release
       - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ needs.package-windows.outputs.version }}
+          VERSION: ${{ needs.package-plugin.outputs.version }}
         run: |
           tag="v${VERSION}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "APISwitch $tag" --generate-notes
+            gh release create "$tag" --title "APISwitch for DeepSeek Harness $tag" --generate-notes
           fi
-          gh release upload "$tag" release/*.exe release/*.sha256.txt --clobber
+          gh release upload "$tag" release/*.zip --clobber

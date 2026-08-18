@@ -11,7 +11,7 @@
       @update:collapsed="saveCollapsed"
     >
       <div class="brand-row">
-        <span class="brand">APISwitch</span>
+        <span class="brand">APISwitch Harness</span>
         <n-button quaternary circle size="small" title="隐藏侧边栏" aria-label="隐藏侧边栏" @click="collapsed=true">«</n-button>
       </div>
       <n-menu :value="route.path" :options="menuOptions" @update:value="navigate" />

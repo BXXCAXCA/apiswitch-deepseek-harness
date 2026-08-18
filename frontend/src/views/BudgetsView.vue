@@ -45,7 +45,6 @@ import { formatChinaDateTime } from '../dateTime'
 
 const message = useMessage()
 const items = ref<any[]>([])
-const tokens = ref<any[]>([])
 const unified = ref<any[]>([])
 const providers = ref<any[]>([])
 const upstream = ref<any[]>([])
@@ -54,12 +53,11 @@ const form = reactive<any>({ name: '', scope: 'global', scope_id: null, billing_
 
 const billingOptions = [{ label: 'Token 成本（金额）', value: 'token_cost' }, { label: '按调用条数', value: 'request_count' }]
 const periodOptions = [{ label: '滚动 5 小时', value: 'rolling_5_hours' }, { label: '自然日（UTC+8）', value: 'calendar_day' }, { label: '自然周（周一至周日，UTC+8）', value: 'calendar_week' }, { label: '自然月（UTC+8）', value: 'calendar_month' }]
-const scopeOptions = [{ label: '全局', value: 'global' }, { label: 'API Token', value: 'token' }, { label: '统一模型', value: 'unified_model' }, { label: '供应商', value: 'provider_instance' }, { label: '供应商的上游模型', value: 'upstream_model' }]
+const scopeOptions = [{ label: '全局', value: 'global' }, { label: '统一模型', value: 'unified_model' }, { label: '供应商', value: 'provider_instance' }, { label: '供应商的上游模型', value: 'upstream_model' }]
 const actionOptions = [{ label: '仅告警', value: 'warn' }, { label: '拒绝请求', value: 'reject' }, { label: '回退免费候选', value: 'fallback_to_free' }, { label: '回退最低价候选', value: 'fallback_to_cheapest' }]
 const currencyOptions = ['USD', 'CNY', 'EUR'].map(value => ({ label: value, value }))
 
 const scopeTargetOptions = computed(() => {
-  if (form.scope === 'token') return tokens.value.map(x => ({ label: `${x.name} (${x.prefix})`, value: String(x.id) }))
   if (form.scope === 'unified_model') return unified.value.map(x => ({ label: x.name, value: String(x.id) }))
   if (form.scope === 'provider_instance') return providers.value.map(x => ({ label: x.name, value: String(x.id) }))
   if (form.scope === 'upstream_model') return upstream.value.map(x => ({ label: `${x.provider_name} / ${x.display_name || x.model_id}`, value: String(x.id) }))
@@ -67,9 +65,8 @@ const scopeTargetOptions = computed(() => {
 })
 
 async function load() {
-  const [budgetRows, tokenRows, unifiedRows, providerRows] = await Promise.all([getJson('/api/admin/budgets'), getJson('/api/admin/tokens'), getJson('/api/admin/unified-models'), getJson('/api/admin/provider-instances')]) as any[]
+  const [budgetRows, unifiedRows, providerRows] = await Promise.all([getJson('/api/admin/budgets'), getJson('/api/admin/unified-models'), getJson('/api/admin/provider-instances')]) as any[]
   items.value = budgetRows
-  tokens.value = tokenRows
   unified.value = unifiedRows
   providers.value = providerRows
   upstream.value = (await Promise.all(providerRows.map(async (provider: any) => (await getJson<any[]>(`/api/admin/provider-instances/${provider.id}/upstream-models`)).map(model => ({ ...model, provider_name: provider.name }))))).flat()
@@ -115,7 +112,6 @@ async function remove(row: any) { await deleteJson(`/api/admin/budgets/${row.id}
 const optionLabel = (options: any[], value: string) => options.find(x => x.value === value)?.label || value
 const targetLabel = (row: any) => {
   if (row.scope === 'global') return '全部请求'
-  if (row.scope === 'token') return tokens.value.find(x => String(x.id) === String(row.scope_id))?.name || `Token #${row.scope_id}`
   if (row.scope === 'unified_model') return unified.value.find(x => String(x.id) === String(row.scope_id))?.name || `统一模型 #${row.scope_id}`
   if (row.scope === 'provider_instance') return providers.value.find(x => String(x.id) === String(row.scope_id))?.name || `供应商 #${row.scope_id}`
   if (row.scope === 'upstream_model') {

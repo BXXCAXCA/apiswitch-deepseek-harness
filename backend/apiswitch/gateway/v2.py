@@ -16,6 +16,7 @@ from apiswitch.api.deps import authenticate_gateway_token, get_db, require_gatew
 from apiswitch.db.models import ApiToken, ApiTokenUnifiedModel, BatchJob, MediaJob, ProviderInstance, StoredFile, SystemSetting, UnifiedModel, UnifiedModelCandidate, UpstreamModel
 from apiswitch.db.session import SessionLocal
 from apiswitch.config import settings
+from apiswitch.harness_runtime import is_harness_token
 from apiswitch.protocols.canonical import CanonicalEvent, CanonicalRequest, CanonicalResponse, ProtocolError, from_anthropic, from_gemini, from_openai_chat, from_openai_responses, from_terminal, reasoning_signature, response_events, to_anthropic_response, to_gemini_response, to_openai_response, to_openai_responses_usage
 from apiswitch.routing.engine import structured_error
 from apiswitch.routing.executor import execute_request
@@ -25,17 +26,24 @@ router = APIRouter(tags=["Gateway"])
 
 
 def _token_model_ids(db:Session,token:ApiToken)->set[int]:
+    if settings.plugin_mode and is_harness_token(token):
+        return set(db.scalars(select(UnifiedModel.id)).all())
     return set(db.scalars(select(ApiTokenUnifiedModel.unified_model_id).where(ApiTokenUnifiedModel.api_token_id==token.id)).all())
 
 
 def _model_authorized(db:Session,token:ApiToken,model_name:str)->bool:
+    if settings.plugin_mode and is_harness_token(token):
+        return db.scalar(select(UnifiedModel.id).where(UnifiedModel.name==model_name)) is not None
     return db.scalar(select(UnifiedModel.id).join(ApiTokenUnifiedModel,ApiTokenUnifiedModel.unified_model_id==UnifiedModel.id).where(ApiTokenUnifiedModel.api_token_id==token.id,UnifiedModel.name==model_name)) is not None
 
 
 def _model_access_error(db:Session,token:ApiToken,model_name:str)->tuple[int,dict[str,Any]]:
     model_exists=db.scalar(select(UnifiedModel.id).where(UnifiedModel.name==model_name)) is not None
     if not model_exists:
-        allowed=list(db.scalars(select(UnifiedModel.name).join(ApiTokenUnifiedModel,ApiTokenUnifiedModel.unified_model_id==UnifiedModel.id).where(ApiTokenUnifiedModel.api_token_id==token.id).order_by(UnifiedModel.name)).all())
+        if settings.plugin_mode and is_harness_token(token):
+            allowed=list(db.scalars(select(UnifiedModel.name).order_by(UnifiedModel.name)).all())
+        else:
+            allowed=list(db.scalars(select(UnifiedModel.name).join(ApiTokenUnifiedModel,ApiTokenUnifiedModel.unified_model_id==UnifiedModel.id).where(ApiTokenUnifiedModel.api_token_id==token.id).order_by(UnifiedModel.name)).all())
         return 404,structured_error("model_not_found","统一模型 ID 不存在；请使用模型列表返回的精确 ID","model_resolution",details={"model":model_name,"allowed_models":allowed})
     return 403,structured_error("model_not_allowed","该 API Token 未获授权使用此统一模型","token_authorization",details={"model":model_name})
 
@@ -46,7 +54,7 @@ def _require_model_authorized(db:Session,token:ApiToken,model_name:str)->None:
 
 
 def _callable_unified_models(db:Session,token:ApiToken)->list[UnifiedModel]:
-    return list(db.scalars(
+    query=(
         select(UnifiedModel)
         .join(UnifiedModelCandidate,UnifiedModelCandidate.unified_model_id==UnifiedModel.id)
         .join(UpstreamModel,UpstreamModel.id==UnifiedModelCandidate.upstream_model_id)
@@ -57,12 +65,13 @@ def _callable_unified_models(db:Session,token:ApiToken)->list[UnifiedModel]:
             UpstreamModel.enabled.is_(True),
             UpstreamModel.remote_status!="missing",
             ProviderInstance.enabled.is_(True),
-            ApiTokenUnifiedModel.api_token_id==token.id,
-            ApiTokenUnifiedModel.unified_model_id==UnifiedModel.id,
         )
         .distinct()
         .order_by(UnifiedModel.name)
-    ).all())
+    )
+    if not (settings.plugin_mode and is_harness_token(token)):
+        query=query.join(ApiTokenUnifiedModel,ApiTokenUnifiedModel.unified_model_id==UnifiedModel.id).where(ApiTokenUnifiedModel.api_token_id==token.id)
+    return list(db.scalars(query).all())
 
 
 @router.get("/v1/models")
