@@ -98,12 +98,10 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm ci && npm run build
-      - name: Start plugin gateway
-        shell: pwsh
-        run: ./scripts/start-plugin.ps1
-      - name: Verify workspace connection and gateway
+      - name: Start plugin gateway and verify workspace connection
         shell: pwsh
         run: |
+          ./scripts/start-plugin.ps1
           New-Item -ItemType Directory -Force smoke-workspace | Out-Null
           ./scripts/connect-harness.ps1 -Workspace ./smoke-workspace
           $runtime = Get-Content -Raw "$env:APISWITCH_HARNESS_DATA_DIR/runtime.json" | ConvertFrom-Json
